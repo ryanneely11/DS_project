@@ -342,5 +342,96 @@ def get_block_data(block_edges,data_dict):
 	return result
 
 
+"""
+a helperfunction for get_epochs. There isn't really a clean or consistant way
+to get the windows for each epoch, because their relationship to the actual timestamp
+is different for each one. So we have to do a messy if/elif operation.
+Inputs:
+	-ts: the actual timestamp of the event of interest
+	-epoch_type: str, taken from the keys of "periods" in the parent func.
+		This will determine how we take windows relative to the timestamp.
+	-epoch_duration: in s, the length of this epoch
+	-win_size: window len in s
+	-win_step: time period by which to advance the windows
+"""
+def get_windows(ts,epoch_type,epoch_duration,win_size,win_step):
+	if epoch_type == "choice":
+		start = ts - epoch_duration ##time leading up to action
+		stop = ts
+	elif epoch_type == "action":
+		start = ts - (epoch_duration/2.0) ##time around action
+		stop = ts + (epoch_duration/2.0)
+	elif epoch_type == "delay":
+		start = ts - epoch_duration ##time leading up to reward
+		stop = ts
+	elif epoch_type == "reward":
+		start = ts ##time after reward
+		stop = ts + epoch_duration
+	##now get the windows
+	windows = []
+	winstart = start
+	winstop = start+win_size
+	while winstop <= stop:
+		windows.append(np.array([winstart,winstop]))
+		winstart+=win_step
+		winstop+=win_step
+	return np.asarray(windows)
+
+"""
+A function to get the windows of all epochs for a given trial.
+This function takes in a row of the block data (ie one trial)
+and returns all of the epochs alinged, as well as the 
+epoch edges
+Inputs:
+	-trial_ts: timestamps of a single trial (one row of block data)
+	-duration of each epoch (s), in order of choice, action, delay, reward
+	-window size in s
+	-window step size in s
+Outputs:
+	-results: array of all the windows
+	-epoch_idx: which windows belong to which epoch (dict of window indexes)
+"""
+def get_epochs(trial_ts,durations,win_size,win_step):
+	epoch_keys = ['choice','action','delay','reward'] ##epoch periods
+	ts_idx = [1,1,2,2] ##index of the timestamps used to locate the above epochs
+	##data to return
+	results = []
+	epoch_idx = {}
+	last_idx = 0
+	for key, idx, dur in zip(epoch_keys,ts_idx,durations):
+		ts = trial_ts[idx] ##timestamp to use
+		epoch_windows = get_windows(ts,key,dur,win_size,win_step) ##window data for this epoch
+		results.append(epoch_windows)
+		epoch_idx[key] = np.arange(len(epoch_windows))+last_idx
+		last_idx+=len(epoch_windows)
+	return np.vstack(results), epoch_idx
+
+"""
+A helper function to calclulate the number of windows to expect
+given a list of epoch durations, a window size, and a window step
+(all in sec)
+Inputs:
+	-durations: duration of each epoch (s), in order of choice, action, delay, reward
+	-win_size: window size in s
+	-win_step: window step size in s
+Outputs: the total numbe of windows (int)
+"""
+def get_num_windows(durations,win_size,win_step):
+	num_wins = 0
+	for d in durations:
+		winstart = np.arange(0,(d-win_size)+win_step,win_step) ##array of all the window starting values
+		num_wins += winstart.shape[0] ##number of total windows
+	return num_wins
+		
+
+
+
+
+
+
+
+
+
+
 
 

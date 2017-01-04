@@ -9,67 +9,62 @@ import parse_ephys as pe
 from sklearn import linear_model
 from sklearn.feature_selection import f_regression
 
+
 """
-This function runs a regression analysis on all of the
-data from one session.
+This function runs a regression analysis on data from one
+unit from one session.
 Inputs:
-	-f_behavior: file path to behavior data (HDF5)
-	-f_ephys: file path to ephys data (HDF5)
-	-window: the time around behavioral events to look at spike
-		data, in seconds, as a list like this: [2,1,1] 
-		the first window is for secs before action, 
-		the second is for time before outcomes/reward,
-		the third is for time after reward
+	-f_behavior: file path of HDF5 file containing the behavioral timestamps
+	-f_ephys: file path to the HDF5 file containing the ephys data
+	-unit_name: name of the unit to run the analysis on
+	-epoch_durations: a list of the desired durations (in sec) of each behavioral epoch. 
+		the order is: choice (pre-action), peri-action (centered around the action ts),
+		delay (time before the rewarde ts), and reward (time after the rewarde ts).
+	-win_size = the size of each window  (in sec)
+	-win_step = the time in s over which to slide the window over each epoch interval. 
+		win_size = win_step means windows do not overlap. 
+	-smooth: whether or not to use gaussian smoothing. Any value > 0 will smooth with
+		a kernel of width smooth
 Returns:
+	-coeffs: an array of estimated regressor coefficients for each time window (coeff x win)
+	-sig_vals: an array of coeff significance values for each time window (corresponds to 
+		coeffs)
+	-epoch_idx: a dictionary reporting which indices in the window (time) dimenstion 
+		correspond to which epochs
 
+******NOTE: I'm building in gaussian smoothing to this function, might want to remove later*****
 """
-def session_regression(f_behavior,f_ephys,window=[2,1,1]):
-	result = {} ##dictionary to return
-	#get the behavioral data:
-	behavior_ts = pt.sort_by_trial(f_behavior,save_data=False)
-	block_names = behavior_ts.keys() ##names of the blocks
-	behavior_data = None
-	regressors = None
-	##concatenate both regressors and behavior ts
-	##at the same time to preserve order for the next step
-	for n in block_names:
-		block_data = behavior_ts[n]
-		regr_data = get_regressors(block_data,n)
-		if behavior_data != None:
-			behavior_data = np.vstack((behavior_data,block_data))
-		else:
-			behavior_data = block_data
-		if regressors != None:
-			regressors = np.vstack((regressors,regr_data))
-		else:
-			regressors = regr_data
-	##now work on the ephys data
-	signals = pe.get_spike_data(f_ephys) ##the binary spike data
-	intervals = ['pre-action','pre-reward','post-reward']##the three periods to look @
-	triggers = ['action','outcome','outcome'] #ehhh... this will make sense later
-	##generate the windows
-	windows = ([window[0],0],[window[1],0],[0,window[2]])
-	for n, inter in enumerate(intervals):
-		##create a nested dictionary for this interval that will go in our output dict
-		units_dict = {}
-		##get the corresponding timestamp data to use
-		trigger_type = triggers[n]
-		##get the window for this interval
-		win = windows[n]
-		##run through each unit and calculate the regression
-		for sig in signals.keys():
-			data = signals[sig]
-			##get the regressand data
-			y = get_regressand(behavior_data,trigger_type,data,win)
-			X = regressors
-			##get the regression data for this unit in this interval
-			coef,pvals = run_regression(y,X)
-			##now save this data to the dictionary
-			units_dict[sig] = (coef,pvals)
-		##now save this data to the outermost dictionary
-		result[inter] = units_dict
-	return result
-
+def regress_unit_epochs(f_behavior,f_ephys,unit_name,
+	epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,smooth=10):
+	##start by getting the paired timestamp and regressor data
+	ts_data, regressors = ts_and_regressors(f_behavior)
+	##now get the spike data for the requested unit
+	spike_data = pe.get_spike_data(f_ephys,unit_name,smooth)
+	num_trials = regressors.shape[0]
+	num_regressors = regressors.shape[1]
+	num_windows = pt.get_num_windows(epoch_durations,win_size,win_step)
+	##allocate the output arrays
+	coeffs = np.zeros((num_regressors,num_windows))
+	sig_vals = np.zeros((num_regressors,num_windows))
+	##build the data arrays. y_windows[i,:] is the spike rate
+	##in window i for every trial in the session
+	y_windows = np.zeros((num_windows,num_trials))
+	for t in range(num_trials):
+		window_edges, epoch_idx = pt.get_epochs(ts_data[t,:],epoch_durations,win_size,win_step)
+		##now we want to fill our spike data array with spike rates in each window.
+		for w in range(window_edges.shape[0]):
+			y_windows[w,t] = pe.window_rate(window_edges[w,:],spike_data)
+	##now we have all the data needed to run the regressions and fill
+	##the output arrays:
+	for win in range(num_windows):
+		y = y_windows[win,:]
+		X = regressors
+		c = run_regression(y,X)
+		p = permutation_test(c,y,X)
+		coeffs[:,win] = c
+		sig_vals[:,win] = p
+	##all done, return results
+	return coeffs,sig_vals,epoch_idx 
 
 """
 a function to generate regressors (ie behavior values) 
@@ -100,10 +95,10 @@ def get_regressors(block_data,block_type):
 	##parse the data, one regressor at a time:
 	if block_type == 'lower_rewarded':
 		Ql = 0.85
-		Qu = 0.0
+		Qu = 0.05
 	elif block_type == 'upper_rewarded':
 		Qu = 0.85
-		Ql = 0.0
+		Ql = 0.05
 	else:
 		raise KeyError("unknown block type: "+key)
 	##run through each trial in this block
@@ -180,22 +175,147 @@ S(t) = a0 + a1C(t) + a2R(t) + a3X(t) + a4Qu(t) + a5Ql(t) + a6Qc(t) + e(t); where
 	-Qc(t) is the value of the chosen action
 	-e(t) is an error term
 Inputs:
-	-S: a vector of regressands, which is the mean spike rate over 
+	-y: a vector of regressands, which is the mean spike rate over 
 		an interval of interest for n trials (see get_regressands)
 	-X: an n-trials by m-regressors array (see get_regresssors)
 Returns:
 	-coeff: fitted coefficient values
 	-pvals: significance of fitted coeffiecient values based on t-test
 """
-def run_regression(S,X):
+def run_regression(y,X):
 	##initialize the regression
 	regr = linear_model.LinearRegression()
 	##fit the model
-	regr.fit(X,S)
+	regr.fit(X,y)
 	##get the coefficients
 	coeff = regr.coef_
-	##now test for significance
-	F, pvals = f_regression(X,S)
-	return coeff, pvals
+	return coeff
+
+"""
+A function to run a parametric t-test on the regression coefficients.
+Inputs:
+	y: regressand data
+	X: regressor array (n-trials by m-regressors)
+Returns:
+	F: F-values for each regressor
+	p: p-value for each regression coefficient
+"""
+def t_test_coeffs(y,X):
+	F,p = f_regression(X,y)
+	return F,p
+
+"""
+A function to test the significance of regression coefficients
+using a permutation test. A parametric t-test could also be used, but
+if action values are included in the regression it makes more sense to 
+use permutation tests (see Kim et al, 2009)
+Inputs:
+	-coeffs: the values of the coefficients to test for significance
+	-y: regressand data used to generate the coefficients
+	-X: regressor data (trials x features)
+	-repeat: number of trials to conduct
+Returns:
+	p: p-value for each coefficient, defined as the frequency with which
+		the shuffled result exceeded the actual result
+"""
+def permutation_test(coeffs,y,X,repeat=1000):
+	regr = linear_model.LinearRegression()
+	##the # of times the shuffled val exceeded the experimental val
+	c_exceeded = np.zeros(coeffs.size)
+	for i in range(repeat):
+		y_shuff = np.random.permutation(y)
+		regr.fit(X,y_shuff)
+		c_shuff = regr.coef_
+		for i in range(c_shuff.size):
+			if abs(c_shuff[i]) > abs(coeffs[i]):
+				c_exceeded[i]+=1
+	p = c_exceeded/float(repeat)
+	return p
+
+"""
+This function is used to generate PAIRED timestamp and regressor data.
+I probably could have designed this better, but the sort_by_trial function
+breaks the results into two blocks, which is needed to apply the correct regressor
+values. But, you want to keep the block data in the same order when you concatenate
+all of the timestamps to get time-locked ephys data. this function generates the concatenated
+regressor data as well as the concatenated timestamp data such that it's all in the
+same order. 
+Inputs:
+	-f_in: path to the hdf5 file containing the timestamp data
+Outputs:
+	-regressors: an array of regressors returned by get_regressors
+	-ts: concatenated timestamps in the same order as the regressors
+"""
+def ts_and_regressors(f_in):
+	##get the results dictionary
+	sorted_data = pt.sort_by_trial(f_in,save_data=False)
+	block_names = sorted_data.keys() ##names of the blocks
+	ts = None
+	regressors = None
+	##concatenate both regressors and behavior ts
+	##at the same time to preserve order for the next step
+	for n in block_names:
+		block_data = sorted_data[n]
+		regr_data = get_regressors(block_data,n)
+		if ts != None:
+			ts = np.vstack((ts,block_data))
+		else:
+			ts = block_data
+		if regressors != None:
+			regressors = np.vstack((regressors,regr_data))
+		else:
+			regressors = regr_data
+	return abs(ts), regressors
+
+
+
+
+######DEPRECATED FUNCTIONS ###########
+
+
+"""
+This function runs a regression analysis on all of the
+data from one session.
+Inputs:
+	-f_behavior: file path to behavior data (HDF5)
+	-f_ephys: file path to ephys data (HDF5)
+	-window: the time around behavioral events to look at spike
+		data, in seconds, as a list like this: [2,1,1] 
+		the first window is for secs before action, 
+		the second is for time before outcomes/reward,
+		the third is for time after reward
+Returns:
+
+"""
+# def session_regression(f_behavior,f_ephys,window=[2,1,1]):
+# 	result = {} ##dictionary to return
+# 	#get the behavioral data:
+# 	behavior_data, regressors = ts_and_regressors(f_in)
+# 	##now work on the ephys data
+# 	signals = pe.get_spike_data(f_ephys) ##the binary spike data
+# 	intervals = ['pre-action','pre-reward','post-reward']##the three periods to look @
+# 	triggers = ['action','outcome','outcome'] #ehhh... this will make sense later
+# 	##generate the windows
+# 	windows = ([window[0],0],[window[1],0],[0,window[2]])
+# 	for n, inter in enumerate(intervals):
+# 		##create a nested dictionary for this interval that will go in our output dict
+# 		units_dict = {}
+# 		##get the corresponding timestamp data to use
+# 		trigger_type = triggers[n]
+# 		##get the window for this interval
+# 		win = windows[n]
+# 		##run through each unit and calculate the regression
+# 		for sig in signals.keys():
+# 			data = signals[sig]
+# 			##get the regressand data
+# 			y = get_regressand(behavior_data,trigger_type,data,win)
+# 			X = regressors
+# 			##get the regression data for this unit in this interval
+# 			coef,pvals = run_regression(y,X)
+# 			##now save this data to the dictionary
+# 			units_dict[sig] = (coef,pvals)
+# 		##now save this data to the outermost dictionary
+# 		result[inter] = units_dict
+# 	return result
 
 

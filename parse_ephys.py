@@ -8,6 +8,7 @@ import glob
 import numpy as np
 #import plxread
 import h5py
+from scipy.ndimage.filters import gaussian_filter
 
 ####TODO: plxread not install correctly!######
 
@@ -42,11 +43,12 @@ This function returns a dictionary of spike data, in binary form,
 given an input hdf5 file.
 Inputs:
 	-f_in: an hdf5 file with the ephys data
+	-smooth: any value > 0 will smooth with a gaussian kernel of width smooth
 Outputs:
 	-result: a dictionary where the keys are unit names and the values
 		are binary arrays of the spike data
 """
-def get_spike_data(f_in):
+def get_spike_data_all(f_in,smooth=0):
 	##dict to return 
 	result = {}
 	##get the duration of this session in ms
@@ -55,14 +57,36 @@ def get_spike_data(f_in):
 	f = h5py.File(f_in,'r')
 	##get the names of all the sorted units contained in this file
 	units_list = [x for x in f.keys() if x.startswith("sig")]
+	f.close()
 	##process each of these sorted units, and add the data to the result dict
 	for unit in units_list:
-		signal = np.asarray(f[unit])
-		##convert the signal to a binary array
-		signal = pt_times_to_binary(signal,duration)
+		signal = get_spike_data(f_in,unit,smooth)
 		##add to the result
 		result[unit] = signal
 	return result
+
+"""
+This function returns the binary transformed spike data
+for one unit.
+Inputs:
+	-f_in: HDF5 data file to get the data from
+	-unit_name: name of the unit to get data for
+	-smooth: a value of smooth > 0 smooths with a gaussian kernel of width smooth
+returns:
+	-result: binary transmormed data array
+"""
+def get_spike_data(f_in,unit_name,smooth=0):
+	duration = get_session_duration(f_in) ##duration of this session
+	##open the source file and get the requested unit data
+	f = h5py.File(f_in,'r')
+	spike_ts = np.asarray(f[unit_name])
+	f.close()
+	##do the transform
+	result = pt_times_to_binary(spike_ts,duration,smooth)
+	##return the result
+	return result
+
+
 """
 This script takes in a 1-D array of timestamps, a single ephys signal (1-D)
 and returns the windowed data around the timestamps.
@@ -97,6 +121,42 @@ def data_windows(timestamps,signal,window=[3,3]):
 	no_data = np.where(row_total==0)
 	return result,no_data
 
+"""
+This function is similar to the above, but instead of taking a center
+timestamp to window around, it takes two edges to take data in between.
+Inputs:
+	-endpoints: the endpoints of the data window (in sec)
+	-signal: a binary-transformed spike data array
+Returns:
+	-result: the requested data window
+"""
+def data_window2(endpoints,signal):
+	##make sure the data is pretty
+	signal = np.squeeze(signal)
+	endpoints = np.asarray(endpoints) ##in secs right here
+	start = np.ceil((endpoints[0]*1000.0)).astype(int) #convert to ms/index
+	stop = np.ceil((endpoints[1]*1000.0)).astype(int)
+	idx = np.arange(start,stop)
+	result = signal[idx]
+	return result
+
+"""
+This function is basically an extension of data_window2
+that just calculates the spike RATE in that window, so the 
+outcome is just some value.
+Inputs:
+Inputs:
+	-endpoints: the endpoints of the data window (in sec)
+	-signal: a binary-transformed spike data array
+Returns:
+	-result: the spike rate over the data window
+"""
+def window_rate(endpoints,signal):
+	data = data_window2(endpoints,signal)
+	##figure out how long the window is (in sec)
+	Nwin = float(endpoints[1]-endpoints[0])
+	datarate = data.sum()/Nwin
+	return datarate
 
 """
 This function returns a dictionary with all the data windows
@@ -129,6 +189,8 @@ def data_windows_multi(f_in,timestamps,window=[3,3]):
 		result[unit] = windows
 	return result
 
+
+
 """
 a helper function to convert spike times to a binary array
 ie, an array where each bin is a ms, and a 1 indicates a spike 
@@ -136,10 +198,13 @@ occurred and a 0 indicates no spike
 Inputs:
 	-signal: an array of spike times in s(!)
 	-duration: length of the recording in ms(!)
+	-smooth: if smooth > 0, use a gaussian kernel 
+		to smooth the binned spikes, with a kernel width of
+		whatever smooth ms
 Outputs:
 	-A duration-length 1-d array as described above
 """
-def pt_times_to_binary(signal, duration):
+def pt_times_to_binary(signal,duration,smooth=0):
 	##convert the spike times to ms
 	signal = signal*1000.0
 	##get recodring length
@@ -151,6 +216,8 @@ def pt_times_to_binary(signal, duration):
 	##do a little song and dance to ge the spike train times into a binary format
 	bTrain = np.histogram(signal,bins=numBins,range=(0,numBins))
 	bTrain = bTrain[0].astype(bool).astype(int)
+	if smooth > 0:
+		bTrain = gauss_convolve(bTrain,smooth)
 	return bTrain
 
 """
@@ -173,3 +240,28 @@ def get_session_duration(f_in):
 	duration = np.ceil(f[sig][-1]*1000.0).astype(int)
 	f.close()
 	return duration
+
+"""
+A function to convolve data with a gaussian kernel of width sigma.
+Inputs:
+	array: the data array to convolve. Will work for multi-D arrays;
+		shape of data should be samples x trials
+	sigma: the width of the kernel, in samples
+"""
+def gauss_convolve(array, sigma):
+	##remove singleton dimesions and make sure values are floats
+	array = array.squeeze().astype(float)
+	##allocate memory for result
+	result = np.zeros(array.shape)
+	##if the array is 2-D, handle each trial separately
+	try:
+		for trial in range(array.shape[1]):
+			result[:,trial] = gaussian_filter(array[:,trial],sigma=sigma,order=0,
+				mode="constant",cval = 0.0)
+	##if it's 1-D:
+	except IndexError:
+		if array.shape[0] == array.size:
+			result = gaussian_filter(array,sigma=sigma,order=0,mode="constant",cval = 0.0)
+		else:
+			print "Check your array input to gaussian filter"
+	return result
