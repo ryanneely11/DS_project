@@ -12,6 +12,7 @@ from scipy.stats import binom_test
 import h5py
 import multiprocessing as mp
 import file_lists 
+import os
 
 
 """
@@ -34,11 +35,18 @@ Returns:
 	TODO: add this feature [-sig_level: the level above which the num_significant values are significant
 		(binomial test)] 
 """
-def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,smooth=10):
+def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,
+	smooth=10,save=True):
 	##data to return
 	coeffs = None
 	perc_sig = None
 	num_total_units = 0
+	##check that all files exist and can be opened before continuing
+	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
+		f = hdf5.File(f_behavior,'r')
+		f.close()
+		f = hdf5.File(f_ephys,'r')
+		f.close()
 	##run session regression on all files in the lists
 	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
 		c,ps,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
@@ -53,6 +61,15 @@ def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,sm
 	##divide by total number of units
 	coeffs = coeffs/float(num_total_units)
 	perc_sig = perc_sig/float(num_total_units)
+	if save:
+		out_path = os.path.join(file_lists.save_loc,"all_files_regression.hdf5")
+		f_out = h5py.File(out_path,'w-')
+		f_out.create_dataset("coeffs",data=coeffs)
+		f_out.create_dataset("perc_sig",data=perc_sig)
+		f_out.create_dataset("num_units",data=num_units)
+		for key in epoch_idx.keys():
+			f_out.create_dataset(key,epoch_idx[key])
+		f_out.close()
 	return coeffs,perc_sig,epoch_idx,num_total_units
 
 
