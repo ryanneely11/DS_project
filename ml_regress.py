@@ -8,7 +8,128 @@ import parse_timestamps as pt
 import parse_ephys as pe
 from sklearn import linear_model
 from sklearn.feature_selection import f_regression
+from scipy.stats import binom_test
+import h5py
+import multiprocessing as mp
+import file_lists 
 
+
+"""
+A function to run regression analyses on a giant list of files
+Inputs:
+	-epoch_durations: a list of the desired durations (in sec) of each behavioral epoch. 
+		the order is: choice (pre-action), peri-action (centered around the action ts),
+		delay (time before the rewarde ts), and reward (time after the rewarde ts).
+	-win_size = the size of each window  (in sec)
+	-win_step = the time in s over which to slide the window over each epoch interval. 
+		win_size = win_step means windows do not overlap. 
+	-smooth: whether or not to use gaussian smoothing. Any value > 0 will smooth with
+		a kernel of width smooth
+Returns: 
+	-coeffs: average coefficients for each regressor over the population
+	-p_significant: an array where each data point is the fraction of units
+		with significant correlation coefficients at a particular timepoint
+	-epoch_idx: a dictionary reporting which indices in the window (time) dimenstion 
+		correspond to which epochs
+	TODO: add this feature [-sig_level: the level above which the num_significant values are significant
+		(binomial test)] 
+"""
+def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,smooth=10):
+	##data to return
+	coeffs = None
+	perc_sig = None
+	num_total_units = 0
+	##run session regression on all files in the lists
+	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
+		c,ps,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
+			win_size,win_step,smooth,proportions=False)
+		num_total_units += num_units
+		try:
+			coeffs = coeffs + c
+			perc_sig = perc_sig + ps
+		except TypeError:
+			coeffs = c
+			perc_sig = ps
+	##divide by total number of units
+	coeffs = coeffs/float(num_total_units)
+	perc_sig = perc_sig/float(num_total_units)
+	return coeffs,perc_sig,epoch_idx,num_total_units
+
+
+
+"""
+This function regresses spike data from all individual units in a session,
+and then returns arrays where each data point is the fraction of units with
+significant regression coefficients at a particular time point in an epoch.
+Inputs:
+	-f_behavior: the file path of the HDF5 file contianing the behavioral data
+	-f_ephys: the file path of the HDF5 file containing the ephys data
+	-epoch_durations: a list of the desired durations (in sec) of each behavioral epoch. 
+		the order is: choice (pre-action), peri-action (centered around the action ts),
+		delay (time before the rewarde ts), and reward (time after the rewarde ts).
+	-win_size = the size of each window  (in sec)
+	-win_step = the time in s over which to slide the window over each epoch interval. 
+		win_size = win_step means windows do not overlap. 
+	-smooth: whether or not to use gaussian smoothing. Any value > 0 will smooth with
+		a kernel of width smooth
+Returns:
+	-coeffs: average coefficients for each regressor over the population
+	-p_significant: an array where each data point is the fraction of units
+		with significant correlation coefficients at a particular timepoint
+	-epoch_idx: a dictionary reporting which indices in the window (time) dimenstion 
+		correspond to which epochs
+	-proportions: if False, will return the counts of units rather than the fractions
+	TODO: add this feature [-sig_level: the level above which the num_significant values are significant
+		(binomial test)] 
+"""
+def regress_session_epochs(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
+	win_size=0.5,win_step=0.25,smooth=10,proportions=True):
+	sig_level = 0.05 ##value to count as significant
+	##get the list of unit names
+	f = h5py.File(f_ephys,'r')
+	unit_list = [x for x in f.keys() if x.startswith("sig")]
+	num_units = len(unit_list)
+	f.close()
+	##create an arguments list to send to processes
+	arglist = [(f_behavior,f_ephys,x,epoch_durations,win_size,win_step,smooth) for x in unit_list]
+	##spawn some processes and have them compute the regressions for each unit
+	pool = mp.Pool(processes=mp.cpu_count())
+	async_result=pool.map_async(mp_regress_unit_epochs,arglist)
+	pool.close()
+	pool.join()
+	data = async_result.get()
+	#parse the results
+	##the indices will be the same for all
+	epoch_idx = data[0][2]
+	##create the output arrays
+	coeffs = np.zeros(data[0][0].shape)
+	perc_sig = np.zeros(data[0][1].shape)
+	for i in range(num_units):
+		coeffs = coeffs+data[i][0]
+		sig = (data[i][1]<=sig_level).astype(float)
+		perc_sig = perc_sig + sig
+	##now just divide by the total number of units analyzed
+	coeffs = coeffs/float(num_units)
+	if proportions:
+		perc_sig = perc_sig/float(num_units)
+	return coeffs,perc_sig,epoch_idx,num_units
+
+"""
+A helper function for using multiple processes on regress_unit_epochs. 
+	-Inputs:
+		-a tuple of arguments to parse into regress_unit_epochs
+"""
+def mp_regress_unit_epochs(args):
+	f_behavior = args[0]
+	f_ephys = args[1]
+	unit_name = args[2]
+	epoch_durations = args[3]
+	win_size = args[4]
+	win_step = args[5]
+	smooth = args[6]
+	coeffs,sig_vals,epoch_idx = regress_unit_epochs(f_behavior,f_ephys,
+		unit_name,epoch_durations,win_size,win_step,smooth)
+	return coeffs,sig_vals,epoch_idx
 
 """
 This function runs a regression analysis on data from one
