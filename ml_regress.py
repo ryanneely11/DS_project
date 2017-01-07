@@ -14,7 +14,6 @@ import multiprocessing as mp
 import file_lists 
 import os
 
-
 """
 A function to run regression analyses on a giant list of files
 Inputs:
@@ -36,28 +35,46 @@ Returns:
 		(binomial test)] 
 """
 def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,
-	smooth=10,save=True):
+	smooth=10,save=True,discard_non_sig=True):
+	results_files = []
+	##run session regression on all files in the lists
+	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
+		current_file = f_behavior[-11:-5]
+		print "Starting on file "+current_file
+		out_path = os.path.join(file_lists.save_loc,current_file+".hdf5")
+		try: 
+			f_out = h5py.File(out_path,'w-')
+			##if data does not exist, calculate it and save it
+			c,ps,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
+				win_size,win_step,smooth,proportions=False,discard_non_sig=discard_non_sig)
+			f_out.create_dataset("coeffs",data=c)
+			f_out.create_dataset("perc_sig",data=ps)
+			f_out.create_dataset("num_units",data=np.array([num_units]))
+			for key in epoch_idx.keys():
+				f_out.create_dataset(key,data=epoch_idx[key])
+			f_out.close()
+			results_files.append(out_path)
+		except IOError:
+			results_files.append(out_path)
+			print current_file+" exists, moving on..."
+	##if all data is saved, you can go back to the files and save the data that you want.
 	##data to return
 	coeffs = None
 	perc_sig = None
 	num_total_units = 0
-	##check that all files exist and can be opened before continuing
-	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
-		f = hdf5.File(f_behavior,'r')
-		f.close()
-		f = hdf5.File(f_ephys,'r')
-		f.close()
-	##run session regression on all files in the lists
-	for f_behavior,f_ephys in zip(file_lists.behavior_files,file_lists.ephys_files):
-		c,ps,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
-			win_size,win_step,smooth,proportions=False)
-		num_total_units += num_units
+	for results_file in results_files:
+		epoch_idx = get_epoch_idx_dict(results_file)
+		f_in = h5py.File(results_file,'r')
+		c = np.asarray(f_in['coeffs'])
+		ps =np.asarray(f_in['perc_sig'])
+		num_units = np.asarray(f_in['num_units'])[0]
 		try:
 			coeffs = coeffs + c
 			perc_sig = perc_sig + ps
 		except TypeError:
 			coeffs = c
 			perc_sig = ps
+		num_total_units+=num_units
 	##divide by total number of units
 	coeffs = coeffs/float(num_total_units)
 	perc_sig = perc_sig/float(num_total_units)
@@ -66,12 +83,31 @@ def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,
 		f_out = h5py.File(out_path,'w-')
 		f_out.create_dataset("coeffs",data=coeffs)
 		f_out.create_dataset("perc_sig",data=perc_sig)
-		f_out.create_dataset("num_units",data=num_units)
+		f_out.create_dataset("num_units",data=np.array([num_total_units]))
 		for key in epoch_idx.keys():
-			f_out.create_dataset(key,epoch_idx[key])
+			f_out.create_dataset(key,data=epoch_idx[key])
 		f_out.close()
 	return coeffs,perc_sig,epoch_idx,num_total_units
 
+"""
+a helper function to get epoch_idx dictionary from a file of regression data
+Inputs:
+	-f_in: file path of HDF5 file with regression data
+Returns:
+	-epoch_idx dictionary with the indices corresponding to the various epochs (dict keys)
+"""
+def get_epoch_idx_dict(f_in):
+	epoch_idx = {
+	"choice":None,
+	"action":None,
+	"delay":None,
+	"reward":None
+	}
+	f = h5py.File(f_in,'r')
+	for key in epoch_idx.keys():
+		epoch_idx[key] = np.asarray(f[key])
+	f.close()
+	return epoch_idx
 
 
 """
@@ -96,11 +132,12 @@ Returns:
 	-epoch_idx: a dictionary reporting which indices in the window (time) dimenstion 
 		correspond to which epochs
 	-proportions: if False, will return the counts of units rather than the fractions
+	-discard_non_sig: if True, discards any units that have no significant regression values
 	TODO: add this feature [-sig_level: the level above which the num_significant values are significant
 		(binomial test)] 
 """
 def regress_session_epochs(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
-	win_size=0.5,win_step=0.25,smooth=10,proportions=True):
+	win_size=0.5,win_step=0.25,smooth=10,proportions=True,discard_non_sig=False):
 	sig_level = 0.05 ##value to count as significant
 	##get the list of unit names
 	f = h5py.File(f_ephys,'r')
@@ -114,7 +151,7 @@ def regress_session_epochs(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 	async_result=pool.map_async(mp_regress_unit_epochs,arglist)
 	pool.close()
 	pool.join()
-	data = async_result.get()
+	data = async_result.get() ##a giant list of all the arrays from all processes
 	#parse the results
 	##the indices will be the same for all
 	epoch_idx = data[0][2]
@@ -122,9 +159,13 @@ def regress_session_epochs(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 	coeffs = np.zeros(data[0][0].shape)
 	perc_sig = np.zeros(data[0][1].shape)
 	for i in range(num_units):
-		coeffs = coeffs+data[i][0]
-		sig = (data[i][1]<=sig_level).astype(float)
-		perc_sig = perc_sig + sig
+		c = data[i][0] ##the coeffs array for the current unit
+		sig = (data[i][1]<=sig_level).astype(float) ##the sig points for this unit 
+		if discard_non_sig and sig.sum() < 1: ##if there are no sig points for this unit
+			num_units-=1 ##decrement the unit count; don't include this data
+		else:
+			coeffs = coeffs+c
+			perc_sig = perc_sig + sig
 	##now just divide by the total number of units analyzed
 	coeffs = coeffs/float(num_units)
 	if proportions:
@@ -178,6 +219,8 @@ def regress_unit_epochs(f_behavior,f_ephys,unit_name,
 	ts_data, regressors = ts_and_regressors(f_behavior)
 	##now get the spike data for the requested unit
 	spike_data = pe.get_spike_data(f_ephys,unit_name,smooth)
+	##run the check on the data to make sure everything will line up
+	ts_data,regressors = check_data_len(ts_data,regressors,spike_data)
 	num_trials = regressors.shape[0]
 	num_regressors = regressors.shape[1]
 	num_windows = pt.get_num_windows(epoch_durations,win_size,win_step)
@@ -268,7 +311,74 @@ def get_regressors(block_data,block_type):
 			raise ValueError("Error calculating Qc(t) for trial "+str(i)+" in block "+key)
 	return X
 
-
+"""
+This function gets the values of regressors, but a different set of regresors than
+the above function. This function gets values:
+Regressors (6):
+	-C(t): choice (upper (C=1) or lower (C=-1) lever)
+	-C(t-1): choice in previous trial
+	-R(t): outcome (rewarded (R=1) or unrewarded (R=0)
+	-R(t-1) outcome of previous trial
+	-Qc(t): Action value of chosen lever (0.01 or 0.85)
+	-D(t): "Reaction" time, or time between lever press and reward port check
+Inputs:
+	-block_data: a numpy array of the format returned by
+		pt.sort_block(). Basically one of the dictionary entries
+		in a dictionary returned by sort_by_trial.
+	-block_type: str, either "upper rewarded" or "lower rewarded."
+Outputs:
+	-X: array of regressors (n-samples x n-features)
+"""
+def get_regressors2(block_data,block_type):
+	##the input array has info about trial start, choice,
+	##outcome, and reward value; but we need to parse it a little further
+	##first figure out how many trials we are dealing with
+	trials = block_data.shape[0]
+	##setup the output array (n trials x 6 regressors)
+	X = np.zeros((trials,6))
+	##parse the data, one regressor at a time:
+	##some values to store:
+	previous_Ct = 0 ##initialize value of previous action at 0 since their wasn't one
+	previous_R = 0 ##same idea with the previous reward
+	if block_type == 'lower_rewarded':
+		Ql = 0.85
+		Qu = 0.05
+	elif block_type == 'upper_rewarded':
+		Qu = 0.85
+		Ql = 0.05
+	else:
+		raise KeyError("unknown block type: "+key)
+	##run through each trial in this block
+	for i in range(block_data.shape[0]):
+		##C(t)
+		if block_data[i,1] < 0: ##case where lower lever is pressed
+			X[i,0] = -1
+		elif block_data[i,1] > 0: ##case where upper lever is pressed
+			X[i,0] = 1
+		else:
+			raise ValueError("error parsing choice for trial "+str(i)+" in block "+key)
+		##C(t-1)
+		X[i,1] = previous_Ct
+		#R(t)
+		if block_data[i,2] < 0: ##case where unrewarded
+			X[i,2] = 0
+		elif block_data[i,2] > 0: ##case where rewarded
+			X[i,2] = 1
+		#R(t-1)
+		X[i,3] = previous_R
+		#Qc(t)
+		if X[i,0] < 0: #lower lever chosen
+			X[i,4] = Ql
+		elif X[i,0] > 0: ##upper lever chosen
+			X[i,4] = Qu
+		else:
+			raise ValueError("Error calculating Qc(t) for trial "+str(i)+" in block "+key)
+		#D(t)/reaction time
+		X[i,5] = abs(block_data[i,2])-abs(block_data[i,1])
+		##now update the past trial values
+		previous_Ct = X[i,0]
+		previous_R = X[i,2]
+	return X
 """
 This function returns the regressand for a block (which in our case is the mean
 FRs in a given interval for a given neuron)
@@ -322,7 +432,7 @@ Returns:
 """
 def run_regression(y,X):
 	##initialize the regression
-	regr = linear_model.LinearRegression()
+	regr = linear_model.Ridge(alpha=0.1)
 	##fit the model
 	regr.fit(X,y)
 	##get the coefficients
@@ -357,7 +467,7 @@ Returns:
 		the shuffled result exceeded the actual result
 """
 def permutation_test(coeffs,y,X,repeat=1000):
-	regr = linear_model.LinearRegression()
+	regr = linear_model.Ridge(alpha=0.5)
 	##the # of times the shuffled val exceeded the experimental val
 	c_exceeded = np.zeros(coeffs.size)
 	for i in range(repeat):
@@ -394,7 +504,7 @@ def ts_and_regressors(f_in):
 	##at the same time to preserve order for the next step
 	for n in block_names:
 		block_data = sorted_data[n]
-		regr_data = get_regressors(block_data,n)
+		regr_data = get_regressors2(block_data,n)
 		if ts != None:
 			ts = np.vstack((ts,block_data))
 		else:
@@ -405,6 +515,35 @@ def ts_and_regressors(f_in):
 			regressors = regr_data
 	return abs(ts), regressors
 
+"""
+a function to check if spike data and behavior data are compatible;
+specifically if the behavior ts overrun the length of the spike data.
+Inputs:
+	=spike_data: binary transformed spike data array
+	-behavior_ts: timestamps of behavioral events
+Returns:
+	-behavior_ts: copy of the behavior timestamp array with
+		any incompatable timestamps removed, if necessary
+"""
+def check_data_len(behavior_ts,regressors,spike_data):
+	##get rid of any trials that end within 5 seconds of the end of the recording
+	##get rid of any trials that start less than 5 seconds after the start of the recording
+	ts_data = behavior_ts
+	regr_data = regressors
+	ephys_len = spike_data.size/1000.0 ##duration in sec to match behavior ts
+	i = 0
+	while i < ts_data.shape[0]:
+		if ts_data[i,1] < 5:
+			print "removing timestamp "+str(ts_data[i,0])+" (too close to start)"
+			ts_data = np.delete(ts_data,i,0)
+			regr_data = np.delete(regr_data,i,0)
+		elif ts_data[i,2]+5 > ephys_len:
+			print "removing timestamp "+str(ts_data[i,2])+" (too close to end)"
+			ts_data = np.delete(ts_data,i,0)
+			regr_data = np.delete(regr_data,i,0)
+		else:
+			i+=1
+	return ts_data,regr_data
 
 
 

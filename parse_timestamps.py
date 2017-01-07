@@ -333,7 +333,16 @@ def get_block_data(block_edges,data_dict):
 		result[key] = data[idx]
 	##figure out if the last trial was completed; if not get rid of it
 	last_trial = result['trial_start'].max()
-	last_action = max(result['lower_lever'].max(),result['upper_lever'].max())
+	##need some error catching here in case there were no upper or lower levers in this block
+	try:
+		last_upper = result['upper_lever'].max()
+	except ValueError: ##case of empty array
+		last_upper = np.array([0])
+	try:
+		last_lower = result['lower_lever'].max()
+	except ValueError:
+		last_lower = np.array([0])
+	last_action = max(last_upper,last_lower)
 	last_poke = max(result['rewarded_poke'].max(),result['unrewarded_poke'].max())
 	if (last_trial < last_action) and (last_trial < last_poke):
 		pass
@@ -424,14 +433,95 @@ def get_num_windows(durations,win_size,win_step):
 	return num_wins
 		
 
+"""
+a helper function to get a-o data from RL modeling functions
+Inputs:
+	f_behavior: HDF5 file with behavioral data
+Outputs:
+	actions: 1-D array of actions; 1 = upper lever; -1 = lower lever
+	outcomes: 1-D array of outcomes; 1 = rewarded; -1 = unrewarded
+	Qu: action value of upper lever (actual)
+	Ql: action value of lower lever (actual)
+"""
+def get_rl_data(f_behavior):
+	pass
+
+####PLOTTING HELPER FUNCTIONS####
+
+##gets info about the duration of trials
+def get_trial_durations(data):
+	#trial duration is defined as the time between
+	#the start of the trial and the first poke
+	result = np.zeros(data.shape[0])
+	for i in range(result.shape[0]):
+		result[i]=abs(data[i,2])-data[i,0] ##abs because negative used to indicate unrewarded
+		##encode the outcome in the same manner
+		if data[i,2] < 0:
+			result[i] = result[i]*-1
+	return result
+
+##get the time between the action and the outcome (checking the nosepoke) 
+def get_ao_interval(data):
+	##diff between the lever and the nosepoke
+	result = np.zeros(data.shape[0])
+	for i in range(result.shape[0]):
+		result[i]=abs(data[i,2])-abs(data[i,1])
+		##encode the outcome
+		if data[i,2] < 0:
+			result[i] = -1.0*result[i]
+	return result
+
+def gauss_convolve(array, sigma):
+	"""
+	takes in an array with dimenstions samples x trials.
+	Returns an array of the same size where each trial is convolved with
+	a gaussian kernel with sigma = sigma.
+	"""
+	##remove singleton dimesions and make sure values are floats
+	array = array.squeeze().astype(float)
+	##allocate memory for result
+	result = np.zeros(array.shape)
+	##if the array is 2-D, handle each trial separately
+	try:
+		for trial in range(array.shape[1]):
+			result[:,trial] = gaussian_filter(array[:, trial], sigma = sigma, order = 0, mode = "constant", cval = 0.0)
+	##if it's 1-D:
+	except IndexError:
+		if array.shape[0] == array.size:
+			result = gaussian_filter(array, sigma = sigma, order = 0, mode = "constant", cval = 0.0)
+		else:
+			print "Check your array dimenszions!"
+	return result
+
+##a function to extract the creation date (expressed as the 
+##julian date) in integer format of a given filepath
+def get_cdate(path):
+	return int(time.strftime("%j", time.localtime(os.path.getctime(path))))
 
 
+##takes in a dictionary returned by parse_log and returns the 
+##percent correct. Chance is the rewarded chance rate for the active lever.
+##function assumes the best possible performance is the chance rate.
+def get_p_correct(result_dict, chance = 0.9):
+	total_trials = len(result_dict['top_lever'])+len(result_dict['bottom_lever'])
+	correct_trials = len(result_dict['rewarded_poke'])
+	return (float(correct_trials)/total_trials)/chance
 
+##takes in a dictionary returned by parse_log and returns the 
+##success rate (mean for the whole session)
+def get_success_rate(result_dict):
+	correct_trials = len(result_dict['rewarded_poke'])
+	session_len = result_dict['session_length'][0]/60.0
+	return float(correct_trials)/session_len
 
-
-
-
-
-
-
+##returns a list of file paths for all log files in a directory
+def get_log_file_names(directory):
+	##get the current dir so you can return to it
+	cd = os.getcwd()
+	filepaths = []
+	os.chdir(directory)
+	for f in glob.glob("*.txt"):
+		filepaths.append(os.path.join(directory,f))
+	os.chdir(cd)
+	return filepaths
 

@@ -9,6 +9,7 @@ import numpy as np
 #import plxread
 import h5py
 from scipy.ndimage.filters import gaussian_filter
+from scipy.stats import zscore
 
 ####TODO: plxread not install correctly!######
 
@@ -137,7 +138,15 @@ def data_window2(endpoints,signal):
 	start = np.ceil((endpoints[0]*1000.0)).astype(int) #convert to ms/index
 	stop = np.ceil((endpoints[1]*1000.0)).astype(int)
 	idx = np.arange(start,stop)
-	result = signal[idx]
+	try:
+		result = signal[idx]
+	except IndexError: ##case where endpoints overrun the bounds of the signal
+		signal2 = np.hstack((np.zeros(10000),signal,np.zeros(10000))) ##pad the signal with some zeros
+		##adjust the endpoints accordingly
+		start = start + 10000
+		stop = stop + 10000
+		idx = np.arange(start,stop)
+		result = signal2[idx]
 	return result
 
 """
@@ -187,6 +196,7 @@ def data_windows_multi(f_in,timestamps,window=[3,3]):
 		windows,no_data = data_windows(timestamps,signal,window)
 		##add to the result
 		result[unit] = windows
+	f.close()
 	return result
 
 
@@ -218,6 +228,7 @@ def pt_times_to_binary(signal,duration,smooth=0):
 	bTrain = bTrain[0].astype(bool).astype(int)
 	if smooth > 0:
 		bTrain = gauss_convolve(bTrain,smooth)
+	bTrain = zscore(bTrain)
 	return bTrain
 
 """
