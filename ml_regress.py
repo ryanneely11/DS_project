@@ -515,6 +515,51 @@ def ts_and_regressors(f_in):
 			regressors = regr_data
 	return abs(ts), regressors
 
+
+"""
+This function is the same as the above version, but it includes
+a dictionary reporting which indices correspond to which behavioral 
+condition. 
+Inputs:
+	-f_in: path to the hdf5 file containing the timestamp data
+Outputs:
+	-regressors: an array of regressors returned by get_regressors
+	-ts: concatenated timestamps in the same order as the regressors
+	-condition_index: dictionary, where keys are different conditions 
+		and the values are indices of what trials correspond to what 
+		conditions
+"""
+
+def ts_and_regressors2(f_in):
+	##get the results dictionary
+	sorted_data = pt.sort_by_trial(f_in,save_data=False)
+	block_names = sorted_data.keys() ##names of the blocks
+	ts = None
+	regressors = None
+	##get the info for condition indices
+	if block_names[0] == 'upper_rewarded': ##case where upper rewarded trials are first
+		upper_rewarded_idx = np.arange(sorted_data['upper_rewarded'].shape[0])
+		lower_rewarded_idx = np.arange(sorted_data['lower_rewarded'].shape[0])+upper_rewarded_idx.size
+	elif block_names[0] == 'lower_rewarded':
+		lower_rewarded_idx = np.arange(sorted_data['lower_rewarded'].shape[0])
+		upper_rewarded_idx = np.arange(sorted_data['upper_rewarded'].shape[0])+lower_rewarded_idx.size	
+	##concatenate both regressors and behavior ts
+	##at the same time to preserve order for the next step
+	for n in block_names:
+		block_data = sorted_data[n]
+		regr_data = get_regressors2(block_data,n)
+		if ts != None:
+			ts = np.vstack((ts,block_data))
+		else:
+			ts = block_data
+		if regressors != None:
+			regressors = np.vstack((regressors,regr_data))
+		else:
+			regressors = regr_data
+	##get the condition indices
+	condition_index = condition_indices(regressors,upper_rewarded_idx,lower_rewarded_idx)
+	return abs(ts), regressors, condition_index
+
 """
 a function to check if spike data and behavior data are compatible;
 specifically if the behavior ts overrun the length of the spike data.
@@ -544,6 +589,49 @@ def check_data_len(behavior_ts,regressors,spike_data):
 		else:
 			i+=1
 	return ts_data,regr_data
+
+"""
+A function to compute the trial conditions based on 
+regression data. Returns a dictionary of indices.
+Conditions considered are:		
+['rewarded','unrewarded','upper_lever','lower_lever','upper_rewarded','lower_rewarded']
+Inputs:
+	-regressors; array of regressor values. 
+		Assumes you are using the get_regressors2 function!!!
+	-upper_rewarded_idx: index of which trials have upper rewarded. Can't be determined otherwise
+	-lower_rewarded_idx: same as above.
+Returns:
+	resutls: dictionary with keys = conditions and vals = indices of trials
+		that fall under that condition
+"""
+def condition_indices(regressors,upper_rewarded_idx,lower_rewarded_idx):
+	#setup the output dictionary
+	results = {
+	'rewarded':[],
+	'unrewarded':[],
+	'upper_lever':[],
+	'lower_lever':[],
+	'upper_rewarded':[],
+	'lower_rewarded':[],
+	}
+	##basically just parse the regression values
+	for trial in range(regressors.shape[0]):
+		#first check the lever press
+		if regressors[trial,0] == 1: ##case upper
+			results['upper_lever'].append(trial)
+		else:
+			results['lower_lever'].append(trial)
+		##now check the reward status
+		if regressors[trial,2] == 1:
+			results['rewarded'].append(trial) ##case rewarded
+		else:
+			results['unrewarded'].append(trial)
+	##now put in the upper and lower data
+	results['upper_rewarded'] = upper_rewarded_idx
+	results['lower_rewarded'] = lower_rewarded_idx
+	for key in results.keys():
+		results[key] = np.asarray(results[key])
+	return results
 
 
 

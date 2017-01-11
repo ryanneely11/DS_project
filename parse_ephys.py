@@ -150,6 +150,31 @@ def data_window2(endpoints,signal):
 	return result
 
 """
+Another data windowing function. This one doesn't assume a bin 
+size for the input array, so the window is expressed in terms of bins.
+Inputs:
+	-signal: the full signal to operate on
+	-window: the window to take data; expressed in terms of array indices
+Output:
+	-data: the requested window of data
+"""
+def data_window3(signal,window):
+	##pretty up the data
+	signal = np.squeeze(signal)
+	start = np.ceil(window[0]).astype(int)
+	stop = np.ceil(window[1]).astype(int)
+	idx = np.arange(start,stop)
+	try:
+		result = signal[idx]
+	except IndexError: #case where indices overrun the bounds of the data
+		signal2 = np.hstack((np.zeros(1000),signal,np.zeros(1000)))
+		##adjust the endpoints
+		start = start +1000
+		stop = stop + 1000
+		idx = np.arange(start,stop)
+		result = signal2[idx]
+	return result
+"""
 This function is basically an extension of data_window2
 that just calculates the spike RATE in that window, so the 
 outcome is just some value.
@@ -232,6 +257,62 @@ def pt_times_to_binary(signal,duration,smooth=0):
 	return bTrain
 
 """
+a function that takes in an array of spike timestamps, 
+in bins them into arbitrary size bins.
+Inputs:
+	-f_in: path to data file
+	-unit_name: name of unit to get data for in the file 
+	-bin_size: size of bins, in ms
+	-smooth: whether to smooth with gaussian kernel of width smooth. 0 is no smoothing
+	-z: if true, returns the z-score of the data
+Outputs:
+	-binned_spikes
+"""
+def bin_spikes(f_in,unit_name,bin_size,smooth=0,z=True):
+	##get the duration of the recording
+	duration = float(get_session_duration(f_in))	
+	##get the spike data
+	f = h5py.File(f_in,'r')
+	##convert timestamps to ms
+	signal = np.asarray(f[unit_name])*1000.0
+	f.close()
+	##set the functional duration as the next multiple of 100 of the recoding duration;
+	#this value will be equivalent to the number of milliseconds in 
+	#the recording (plus a bit more)
+	duration = np.ceil(duration/100)*100
+	##get the number of bins
+	num_bins = int(np.ceil(duration)/float(bin_size))
+	binned_spikes = np.histogram(signal,bins=num_bins,range=(0,duration))[0]
+	if smooth > 0:
+		binned_spikes = gauss_convolve(binned_spikes,smooth)
+	if z:
+		binned_spikes = zscore(binned_spikes)
+	return binned_spikes
+
+"""
+A function to bin all spikes from a session. 
+Inputs:
+	-f_in: file path of ephys data
+	-bin_size: size of bins in ms
+	-smooth: whether to smooth with gaussian kernel of width smooth. 0 is no smoothing
+	-z: if true, returns the z-score of the data
+"""
+def bin_spikes_all(f_in,bin_size,smooth=0,z=True):
+	##dict to return 
+	result = {}
+	##open our source file
+	f = h5py.File(f_in,'r')
+	##get the names of all the sorted units contained in this file
+	units_list = [x for x in f.keys() if x.startswith("sig")]
+	f.close()
+	##process each of these sorted units, and add the data to the result dict
+	for unit in units_list:
+		signal = bin_spikes(f_in,unit,bin_size,smooth,z)
+		##add to the result
+		result[unit] = signal
+	return result
+
+"""
 A helper function to get the duration of a session.
 Operates on the principal that the session duration is
 equal to the length of the LFP (slow channel, A/D) recordings 
@@ -276,3 +357,4 @@ def gauss_convolve(array, sigma):
 		else:
 			print "Check your array input to gaussian filter"
 	return result
+

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import ArrowStyle
 import matplotlib.gridspec as gridspec
+import PCA as pca
 
 """
 A function to plot the significance of the regression
@@ -815,3 +816,95 @@ def plot_epochs_multi(directories):
 		tick.label.set_fontsize(14)
 	for tick in ax.yaxis.get_major_ticks():
 		tick.label.set_fontsize(14)
+
+
+#$$$$$$$$$$$$$$$$$ PCA visualization aids $$$$$$$$$$$$$$$$$
+
+"""
+Plots a sample of the raw data matrix, X.
+Inputs:
+	-X; raw data matrix calculated by pca.get_datamatrix()
+	-trial_len: length of one trial in bins
+"""
+def plot_X_sample(X,trial_len):
+	fig, ax = plt.subplots(1)
+	cax=ax.imshow(X[:,:trial_len*10],origin='lower',interpolation='none',aspect='auto')
+	x = np.arange(0,trial_len*10,trial_len)
+	ax.vlines(x,0,X.shape[0], linestyle='dashed',color='white')
+	ax.set_ylabel("Neuron #",fontsize=18)
+	ax.set_xlabel("Bin #", fontsize=18)
+	cb = fig.colorbar(cax,label="spikes")
+	fig.set_size_inches(10,6)
+	fig.suptitle("Showing first 10 trials",fontsize=20)
+
+"""
+A function to plot the covariance matrix
+Inputs:
+	-C: covariance matrix
+"""
+def plot_cov(C):
+	fig, ax = plt.subplots(1)
+	cax = ax.imshow(C,interpolation='none')
+	cb = plt.colorbar(cax,label='correlation',aspect='auto')
+	ax.set_xlabel("Neuron #",fontsize=14)
+	ax.set_ylabel("Neuron #",fontsize=14)
+	fig.set_size_inches(8,8)
+	fig.suptitle("Covariance of data",fontsize=16)
+
+"""
+A function to plot eigenvals and a null distribution
+Inputs:
+	-C: covariance matrix
+	-X: raw data matrix
+"""
+def plot_eigen(C,X,w,v):
+	##compute the Marcenko-pastur distribution
+	q = 1.0*X.shape[1]/X.shape[0]
+	lmax = (1+np.sqrt(1/q))**2
+	lmin = (1-np.sqrt(1/q))**2
+	x = np.linspace(lmin,lmax,1000)
+	f = q/2*np.pi*(np.sqrt(lmax-x)*(x-lmin))/x
+	##now plot
+	fig, ax = plt.subplots(1)
+	ax.plot(x,f,linewidth=2,color='r',label='random distribution')
+	##now plot a histogram of the eigenvalues
+	ax.hist(w,8,orientation='vertical',facecolor='k',alpha=0.5)
+	ax.set_ylabel("Counts")
+	ax.set_xlabel("eigenvalues")
+	ax.legend()
+	##compute the Tracy-Widiom distrubution value corresponding to 
+	##the highest eigenvalue (finite-size correction):
+	tw_max = lmax + X.shape[1]**-2/3
+	##plot the eigenvectors
+	##and the associated eigenvalues
+	idx = np.argsort(w)[::-1]
+	evals = w[idx]
+	evecs = v[:,idx]
+	fig, (ax1,ax2) = plt.subplots(2,sharex=True)
+	ax1.plot(evals,'-o')
+	ax1.plot(np.arange(evals.shape[0]),np.ones(evals.shape[0])*lmax,
+	        '--',color='k',label='lmax')
+	ax1.plot(np.arange(evals.shape[0]),np.ones(evals.shape[0])*tw_max,
+	       '--',color='r',label='tw_max')
+	ax1.set_xlabel("eigenvector #",fontsize=14)
+	ax1.set_ylabel('eigenvalue',fontsize=14)
+	ax1.legend()
+	cax = ax2.imshow(evecs.T,interpolation='none',aspect='auto')
+	cbaxes = fig.add_axes([0.93, 0.12, 0.03, 0.3]) 
+	cb = plt.colorbar(cax, cax=cbaxes) 
+	ax2.set_xlabel("Principal component #",fontsize=14)
+	ax2.set_ylabel("Neuron #",fontsize=14)
+	fig.set_size_inches(8,8)
+	##plot the first PC
+	PC1 = evecs[0,:]
+	fig, (ax1,ax2) = plt.subplots(2,sharex=True)
+	ax1.stem(PC1)
+	op = np.outer(PC1,PC1)
+	cax = ax2.imshow(op,interpolation='none',aspect='auto')
+	cbaxes = fig.add_axes([0.93, 0.12, 0.03, 0.3]) 
+	cb = plt.colorbar(cax, cax=cbaxes) 
+	ax2.set_xlabel("Neuron #",fontsize=14)
+	ax2.set_ylabel("Neuron #",fontsize=14)
+	ax1.set_title("PC1",fontsize=16)
+	fig.set_size_inches(6,12)
+	fig.subplots_adjust(hspace=0.01)

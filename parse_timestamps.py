@@ -434,17 +434,40 @@ def get_num_windows(durations,win_size,win_step):
 		
 
 """
-a helper function to get a-o data from RL modeling functions
+sort_trials_by_condition:
+A function that sorts trials according to 6 conditions:
+-choice: top or bottom
+-outcome: correct or incorrect
+-action value: top rewarded or bottom rewarded
 Inputs:
-	f_behavior: HDF5 file with behavioral data
+	-f_in: file path of an HDF5 dataset with the behavioral timestamps
 Outputs:
-	actions: 1-D array of actions; 1 = upper lever; -1 = lower lever
-	outcomes: 1-D array of outcomes; 1 = rewarded; -1 = unrewarded
-	Qu: action value of upper lever (actual)
-	Ql: action value of lower lever (actual)
+	-results: a dictionary with the timestamps for each of the 6 conditions:
+		"rewarded","unrewarded","upper_lever","lower_lever","upper_rewarded","lower_rewarded"
+Note that the individual trials will be included in multiple conditions.
 """
-def get_rl_data(f_behavior):
-	pass
+def sort_trials_by_condition(f_in):
+	##dictionary to return:
+	results = {}
+	## a lot of this work is done for us already:
+	data = sort_by_trial(f_in,save_data=False)
+	results['upper_rewarded'] = data['upper_rewarded']
+	results['lower_rewarded'] = data['lower_rewarded']
+	##now concatenate into one long array
+	data = np.vstack((data['upper_rewarded'],data['lower_rewarded']))
+	##get just the rewarded trials
+	idx = np.where(data[:,2]>0)[0]
+	results['rewarded'] = data[idx,:]
+	##unrewarded trials
+	idx = np.where(data[:,2]<0)[0]
+	results['unrewarded'] = data[idx,:]
+	##upper lever trials
+	idx = np.where(data[:,1]>0)[0]
+	results['upper_lever'] = data[idx,:]
+	##lower lever trials
+	idx = np.where(data[:,1]<0)[0]
+	results['lower_lever'] = data[idx,:]
+	return results
 
 ####PLOTTING HELPER FUNCTIONS####
 
@@ -525,3 +548,38 @@ def get_log_file_names(directory):
 	os.chdir(cd)
 	return filepaths
 
+"""
+a simple LUT for the epochs and their relationship to the
+behavioral timestamps.
+Inputs: 
+	-epoch: string, the name of the epoch you care about
+Returns:
+	-idx: index of the timestamp that marks this epoch
+"""
+def epoch_LUT(epoch):
+	if epoch == "trial_start":
+		idx = 0
+	elif epoch == "choice":
+		idx = 1
+	elif epoch == "action":
+		idx = 1
+	elif epoch == "delay":
+		idx = 2
+	elif epoch == "reward":
+		idx = 2
+	return idx
+
+"""
+a function to take in an array of timestamps, a bin size,
+and return the timestamps in terms of bins
+Inputs:
+	-ts: array of timestamps in sec
+	-bin_size: width of bins in ms
+Returns:
+	ts: timestamps in terms of bins
+"""
+def ts_to_bins(ts,bin_size):
+	ts = np.squeeze(ts)
+	ts = ts*1000.0
+	ts = np.ceil(ts/bin_size).astype(int)
+	return ts
