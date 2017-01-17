@@ -13,6 +13,7 @@ import h5py
 import multiprocessing as mp
 import file_lists 
 import os
+from sklearn.model_selection import cross_val_predict
 
 """
 A function to run regression analyses on a giant list of files
@@ -45,11 +46,12 @@ def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,
 		try: 
 			f_out = h5py.File(out_path,'w-')
 			##if data does not exist, calculate it and save it
-			c,ps,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
+			c,ps,r2s,epoch_idx,num_units = regress_session_epochs(f_behavior,f_ephys,epoch_durations,
 				win_size,win_step,smooth,proportions=False,discard_non_sig=discard_non_sig)
 			f_out.create_dataset("coeffs",data=c)
 			f_out.create_dataset("perc_sig",data=ps)
 			f_out.create_dataset("num_units",data=np.array([num_units]))
+			f_out.create_dataset("R2_score",data=r2s)
 			for key in epoch_idx.keys():
 				f_out.create_dataset(key,data=epoch_idx[key])
 			f_out.close()
@@ -61,33 +63,39 @@ def regress_everything(epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25,
 	##data to return
 	coeffs = None
 	perc_sig = None
+	R2 = None
 	num_total_units = 0
 	for results_file in results_files:
 		epoch_idx = get_epoch_idx_dict(results_file)
 		f_in = h5py.File(results_file,'r')
 		c = np.asarray(f_in['coeffs'])
 		ps =np.asarray(f_in['perc_sig'])
+		r2s = np.asarray(f_in['R2_score'])
 		num_units = np.asarray(f_in['num_units'])[0]
 		try:
 			coeffs = coeffs + c
 			perc_sig = perc_sig + ps
+			R2 = R2 + r2s
 		except TypeError:
 			coeffs = c
 			perc_sig = ps
+			R2 = r2s
 		num_total_units+=num_units
 	##divide by total number of units
 	coeffs = coeffs/float(num_total_units)
 	perc_sig = perc_sig/float(num_total_units)
+	R2 = R2/float(num_total_units)
 	if save:
 		out_path = os.path.join(file_lists.save_loc,"all_files_regression.hdf5")
 		f_out = h5py.File(out_path,'w-')
 		f_out.create_dataset("coeffs",data=coeffs)
 		f_out.create_dataset("perc_sig",data=perc_sig)
+		f_out.create_dataset("R2_score",data=R2)
 		f_out.create_dataset("num_units",data=np.array([num_total_units]))
 		for key in epoch_idx.keys():
 			f_out.create_dataset(key,data=epoch_idx[key])
 		f_out.close()
-	return coeffs,perc_sig,epoch_idx,num_total_units
+	return coeffs,perc_sig,R2,epoch_idx,num_total_units
 
 """
 a helper function to get epoch_idx dictionary from a file of regression data
@@ -154,23 +162,27 @@ def regress_session_epochs(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 	data = async_result.get() ##a giant list of all the arrays from all processes
 	#parse the results
 	##the indices will be the same for all
-	epoch_idx = data[0][2]
+	epoch_idx = data[0][3]
 	##create the output arrays
 	coeffs = np.zeros(data[0][0].shape)
 	perc_sig = np.zeros(data[0][1].shape)
+	r2s = np.zeros(data[0][2].shape)
 	for i in range(num_units):
 		c = data[i][0] ##the coeffs array for the current unit
-		sig = (data[i][1]<=sig_level).astype(float) ##the sig points for this unit 
+		sig = (data[i][1]<=sig_level).astype(float) ##the sig points for this unit
+		r2 = data[i][2]
 		if discard_non_sig and sig.sum() < 1: ##if there are no sig points for this unit
 			num_units-=1 ##decrement the unit count; don't include this data
 		else:
 			coeffs = coeffs+c
 			perc_sig = perc_sig + sig
+			r2s = r2s + r2
 	##now just divide by the total number of units analyzed
 	coeffs = coeffs/float(num_units)
+	r2s = r2s/num_units
 	if proportions:
 		perc_sig = perc_sig/float(num_units)
-	return coeffs,perc_sig,epoch_idx,num_units
+	return coeffs,perc_sig,r2s,epoch_idx,num_units
 
 """
 A helper function for using multiple processes on regress_unit_epochs. 
@@ -185,9 +197,9 @@ def mp_regress_unit_epochs(args):
 	win_size = args[4]
 	win_step = args[5]
 	smooth = args[6]
-	coeffs,sig_vals,epoch_idx = regress_unit_epochs(f_behavior,f_ephys,
+	coeffs,sig_vals,r2s,epoch_idx = regress_unit_epochs(f_behavior,f_ephys,
 		unit_name,epoch_durations,win_size,win_step,smooth)
-	return coeffs,sig_vals,epoch_idx
+	return coeffs,sig_vals,r2s,epoch_idx
 
 """
 This function runs a regression analysis on data from one
@@ -227,6 +239,7 @@ def regress_unit_epochs(f_behavior,f_ephys,unit_name,
 	##allocate the output arrays
 	coeffs = np.zeros((num_regressors,num_windows))
 	sig_vals = np.zeros((num_regressors,num_windows))
+	r2s = np.zeros(num_windows)
 	##build the data arrays. y_windows[i,:] is the spike rate
 	##in window i for every trial in the session
 	y_windows = np.zeros((num_windows,num_trials))
@@ -240,12 +253,60 @@ def regress_unit_epochs(f_behavior,f_ephys,unit_name,
 	for win in range(num_windows):
 		y = y_windows[win,:]
 		X = regressors
-		c = run_regression(y,X)
+		c,r2 = run_regression(y,X)
 		p = permutation_test(c,y,X)
 		coeffs[:,win] = c
 		sig_vals[:,win] = p
+		r2s[win] = r2
 	##all done, return results
-	return coeffs,sig_vals,epoch_idx 
+	return coeffs,sig_vals,r2s,epoch_idx 
+
+"""
+This function is a method to run regression on a data matrix, X,
+of the type returned by the PCA function get_data_matrix().
+It will perform regression on each element of the array, which 
+corresponds to binned spike data. The result can then be used in 
+PCA/dimensionality reduction analyses.
+Inputs:
+	X: data matrix in the form returned by PCA.get_data_matrix()
+	regressors: values of regressors matched in order to the trials
+		of X. Regressors should follow the model returned by get_regressors2.
+	Returns:
+		coeffs: a matrix of regression coefficients, dimensions 
+		sig_vals: a matrix of significant regression values in the 
+			same dims as coeffs
+"""
+def data_matrix_regression(X,regressors):
+	##add a constant value to the regressor matrix
+	const = np.ones((regressors.shape[0],1))
+	regressors = np.hstack((regressors,const))
+	num_regressors = regressors.shape[1]
+	##how many trials do we have?
+	num_trials = regressors.shape[0]
+	##how many regressors?
+	##get the number of bins per trial. This should be equal to
+	##the total size of the array/the number of trials:
+	bins_per_trial = X.shape[1]/num_trials
+	##make sure that this comes out evenly; otherwise we have an issue
+	assert X.shape[1]%regressors.shape[0] == 0
+	##allocate the output arrays. They should be the same size as X, but with 
+	##an extra dimension the regressors
+	coeffs = np.zeros((num_regressors,X.shape[0],bins_per_trial))
+	sig_vals = np.zeros(coeffs.shape)
+	##regress data from one unit at a time
+	for u in range(X.shape[0]):
+		spike_data = X[u,:].reshape((num_trials,bins_per_trial)) ## spike data for all trials for this unit
+		##now analyze each time bin separately
+		for b in range(bins_per_trial):
+			y_data = spike_data[:,b] ##the spike data value for this bin for all trials
+			##get the regression coefficients for this bin; add to the data matrix
+			c,r2 = run_regression(y_data,regressors)
+			F,p = t_test_coeffs(y_data,regressors)
+			coeffs[:,u,b] = c
+			sig_vals[:,u,b] = p
+	return coeffs,sig_vals 
+
+
 
 """
 a function to generate regressors (ie behavior values) 
@@ -432,12 +493,15 @@ Returns:
 """
 def run_regression(y,X):
 	##initialize the regression
-	regr = linear_model.Ridge(alpha=0.1)
+	regr = linear_model.LinearRegression(fit_intercept=True)
 	##fit the model
 	regr.fit(X,y)
 	##get the coefficients
 	coeff = regr.coef_
-	return coeff
+	##get the accuracy of the prediction
+	pred = cross_val_predict(regr,X,y)
+	r2 = rmse(pred,y)
+	return coeff,r2
 
 """
 A function to run a parametric t-test on the regression coefficients.
@@ -633,7 +697,11 @@ def condition_indices(regressors,upper_rewarded_idx,lower_rewarded_idx):
 		results[key] = np.asarray(results[key])
 	return results
 
-
+"""
+Helper function to return RMSE of two dataset (of equal size)
+"""
+def rmse(predictions, targets):
+    return np.sqrt(((predictions - targets) ** 2).mean())
 
 ######DEPRECATED FUNCTIONS ###########
 

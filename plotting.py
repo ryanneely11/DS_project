@@ -8,6 +8,8 @@ import numpy as np
 from matplotlib.patches import ArrowStyle
 import matplotlib.gridspec as gridspec
 import PCA as pca
+from mpl_toolkits.mplot3d import Axes3D
+
 
 """
 A function to plot the significance of the regression
@@ -39,11 +41,13 @@ def plot_all_regressions(epoch_durations=[2,0.5,1,2],
 	##the x-axis 
 	x_coords = np.linspace(0,sum(epoch_durations),num_windows)
 	##get the data
-	coeffs,sig_vals,epoch_idx,num_units = mr.regress_everything(epoch_durations=epoch_durations,
+	coeffs,sig_vals,r2s,epoch_idx,num_units = mr.regress_everything(epoch_durations=epoch_durations,
 		win_size=win_size,win_step=win_step,smooth=smooth,save=False,discard_non_sig=discard_non_sig)
 	##setup the figure to plot the significant values
 	fig = plt.figure()
 	gs = gridspec.GridSpec(len(regressors),num_windows)
+	min_y = sig_vals.min()
+	max_y = sig_vals.max()
 	for r in range(len(regressors)):
 		for e in range(len(epochs)):
 			epoch = epochs[e]
@@ -61,7 +65,7 @@ def plot_all_regressions(epoch_durations=[2,0.5,1,2],
 			# for xpt,ypt in zip(x,ydata):
 			# 	if ypt <=0.05:
 			# 		ax.text(xpt,ypt+0.1,"*",fontsize=16) ##TODO: figure out how to get significance here
-			ax.set_ylim(0,0.6)
+			ax.set_ylim(min_y,max_y)
 			##conditional axes labels
 			if r+1 == len(regressors):
 				ax.set_xticks(np.round(x,1))
@@ -82,6 +86,8 @@ def plot_all_regressions(epoch_durations=[2,0.5,1,2],
 	#setup the figure to plot the coefficients
 	fig = plt.figure()
 	gs = gridspec.GridSpec(len(regressors),num_windows)
+	min_y = coeffs.min()
+	max_y = coeffs.max()
 	for r in range(len(regressors)):
 		for e in range(len(epochs)):
 			epoch = epochs[e]
@@ -99,7 +105,7 @@ def plot_all_regressions(epoch_durations=[2,0.5,1,2],
 			# for xpt,ypt in zip(x,ydata):
 			# 	if ypt <=0.05:
 			# 		ax.text(xpt,ypt+0.1,"*",fontsize=16) ##TODO: figure out how to get significance here
-			ax.set_ylim(-1,1)
+			ax.set_ylim(min_y,max_y)
 			##conditional axes labels
 			if r+1 == len(regressors):
 				ax.set_xticks(np.round(x,1))
@@ -117,6 +123,35 @@ def plot_all_regressions(epoch_durations=[2,0.5,1,2],
 			if r+1 == len(regressors) and e == 2:
 				ax.set_xlabel("Time in trial, s",fontsize=14,weight='bold')
 	fig.suptitle("Mean regression coeffs.",fontsize=14)
+	##now plot the predictability values
+	fig = plt.figure()
+	gs = gridspec.GridSpec(1,num_windows)
+	min_y = r2s.min()
+	max_y = r2s.max()
+	for e in range(len(epochs)):
+		epoch = epochs[e]
+		idx = epoch_idx[epoch]
+		x = x_coords[idx]
+		ax = plt.subplot(gs[0,idx[0]:idx[-1]+1])
+		if x.size == 1:
+			x_center = x[0]/2.0
+		else:
+			x_center = (x[-1]-x[0])/2
+		color = colors[e]
+		ydata = r2s[idx]
+		ax.plot(x,ydata,color=color,linewidth=2,marker='o',label=epoch)
+		ax.set_ylim(min_y,max_y)
+		ax.set_xticks(np.round(x,1))
+		if e+1 == len(epochs):
+			ax.yaxis.tick_right()
+		else:
+			ax.set_yticklabels([])
+		ax.set_title(epoch_labels[e],fontsize=14,weight='bold')
+		if e == 0:
+			ax.set_ylabel("RMSE, A.U.",fontsize=12,weight='bold')
+		if e == 2:
+			ax.set_xlabel("Time in trial, s",fontsize=14,weight='bold')
+	fig.suptitle("Prediction error "+f_behavior[-11:-5],fontsize=14)
 
 
 """
@@ -148,12 +183,14 @@ def plot_session_regression(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 	##the x-axis 
 	x_coords = np.linspace(0,sum(epoch_durations),num_windows)
 	##get the data
-	coeffs,sig_vals,epoch_idx,num_units = mr.regress_session_epochs(f_behavior,f_ephys,
+	coeffs,sig_vals,r2s,epoch_idx,num_units = mr.regress_session_epochs(f_behavior,f_ephys,
 		epoch_durations=epoch_durations,win_size=win_size,win_step=win_step,proportions=True,
 		discard_non_sig=discard_non_sig)
 	##setup the figure
 	fig = plt.figure()
 	gs = gridspec.GridSpec(len(regressors),num_windows)
+	min_y = sig_vals.min()
+	max_y = sig_vals.max()
 	for r in range(len(regressors)):
 		for e in range(len(epochs)):
 			epoch = epochs[e]
@@ -171,7 +208,7 @@ def plot_session_regression(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 			# for xpt,ypt in zip(x,ydata):
 			# 	if ypt <=0.05:
 			# 		ax.text(xpt,ypt+0.1,"*",fontsize=16) ##TODO: figure out how to get significance here
-			ax.set_ylim(0,0.6)
+			ax.set_ylim(min_y,max_y)
 			##conditional axes labels
 			if r+1 == len(regressors):
 				ax.set_xticks(np.round(x,1))
@@ -192,6 +229,8 @@ def plot_session_regression(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 	##setup the figure for coefficient plotting
 	fig = plt.figure()
 	gs = gridspec.GridSpec(len(regressors),num_windows)
+	min_y = coeffs.min()
+	max_y = coeffs.max()
 	for r in range(len(regressors)):
 		for e in range(len(epochs)):
 			epoch = epochs[e]
@@ -209,7 +248,7 @@ def plot_session_regression(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 			# for xpt,ypt in zip(x,ydata):
 			# 	if ypt <=0.05:
 			# 		ax.text(xpt,ypt+0.1,"*",fontsize=16) ##TODO: figure out how to get significance here
-			#ax.set_ylim(-0.8,0.8)
+			ax.set_ylim(min_y,max_y)
 			##conditional axes labels
 			if r+1 == len(regressors):
 				ax.set_xticks(np.round(x,1))
@@ -227,7 +266,35 @@ def plot_session_regression(f_behavior,f_ephys,epoch_durations=[2,0.5,1,2],
 			if r+1 == len(regressors) and e == 2:
 				ax.set_xlabel("Time in trial, s",fontsize=14,weight='bold')
 	fig.suptitle("Coefficient values"+f_behavior[-11:-5],fontsize=14)
-
+	##now plot the predictability values
+	fig = plt.figure()
+	gs = gridspec.GridSpec(1,num_windows)
+	min_y = r2s.min()
+	max_y = r2s.max()
+	for e in range(len(epochs)):
+		epoch = epochs[e]
+		idx = epoch_idx[epoch]
+		x = x_coords[idx]
+		ax = plt.subplot(gs[0,idx[0]:idx[-1]+1])
+		if x.size == 1:
+			x_center = x[0]/2.0
+		else:
+			x_center = (x[-1]-x[0])/2
+		color = colors[e]
+		ydata = r2s[idx]
+		ax.plot(x,ydata,color=color,linewidth=2,marker='o',label=epoch)
+		ax.set_ylim(min_y,max_y)
+		ax.set_xticks(np.round(x,1))
+		if e+1 == len(epochs):
+			ax.yaxis.tick_right()
+		else:
+			ax.set_yticklabels([])
+		ax.set_title(epoch_labels[e],fontsize=14,weight='bold')
+		if e == 0:
+			ax.set_ylabel("RMSE, A.U.",fontsize=12,weight='bold')
+		if e == 2:
+			ax.set_xlabel("Time in trial, s",fontsize=14,weight='bold')
+	fig.suptitle("Prediction Error "+f_behavior[-11:-5],fontsize=14)
 
 """
 A function to plot the significance of the regression
@@ -259,7 +326,7 @@ def plot_unit_regression(f_behavior,f_ephys,unit_name,
 	##the x-axis 
 	x_coords = np.linspace(0,sum(epoch_durations),num_windows)
 	##get the data
-	coeffs,sig_vals,epoch_idx = mr.regress_unit_epochs(f_behavior,f_ephys,unit_name,
+	coeffs,sig_vals,r2,epoch_idx = mr.regress_unit_epochs(f_behavior,f_ephys,unit_name,
 		epoch_durations=[2,0.5,1,2],win_size=0.5,win_step=0.25)
 	##setup the figure
 	fig = plt.figure()
@@ -908,3 +975,21 @@ def plot_eigen(C,X,w,v):
 	ax1.set_title("PC1",fontsize=16)
 	fig.set_size_inches(6,12)
 	fig.subplots_adjust(hspace=0.01)
+
+
+"""
+a function to plot the three first 3 PCs in
+3D space.
+Inputs:
+	Xpca: X-matrix projected onto the PCs
+	trial_bins: # of bins per trial in X
+	n_trial: number of trials to plot
+"""
+def plot_pc_trials(Xpca,trial_bins,n_trials=10):
+	fig = plt.figure()
+	ax = fig.add_subplot(111,projection='3d')
+	for i in range(n_trials):
+		ax.plot(Xpca[0,i*trial_bins:(i+1)*trial_bins],
+				Xpca[1,i*trial_bins:(i+1)*trial_bins],
+				Xpca[2,i*trial_bins:(i+1)*trial_bins])
+	plt.title("First three PCs")

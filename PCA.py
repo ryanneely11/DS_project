@@ -9,6 +9,8 @@ import numpy as np
 import plotting as ptt
 from scipy.stats import zscore
 from numpy import linalg as la
+import ml_regress as mr
+from sklearn.decomposition import PCA
 
 """
 A function to build the raw data matrix, X, for a
@@ -19,28 +21,25 @@ Inputs:
 	-f_ephys: HDF5 file containing ephys data
 	-epoch: str, containing the name of the epoch (choose one of
 		'['choice','action','delay','reward'])
-	-condition: str specifying which type of trials to look at. Choose from:
-		['rewarded','unrewarded','upper_lever','lower_lever','upper_rewarded','lower_rewarded']
-		alternatively, you can pass 'all,' which will do all conditions
 	-epoch_window: [pre,post] event in s
 	-bin: bin size, in ms
 	-smooth: width of gaussian kernel used to smooth data
 Outputs:
 	X, a data matrix of N-unit by (c conditions * t bins)
+	coeffs, a matrix of regression coefficients for each trial
+		included in X.
+	cond_idx: a dictionary indicating what trial indices fall
+		under what condition
 """
-def get_data_matrix(f_behavior,f_ephys,epoch,condition,epoch_window=[1.5,0.5],
+def get_data_matrix(f_behavior,f_ephys,epoch,epoch_window=[1.5,0.5],
 	bins=100,smooth=50,plot=True):
 	##get the data from the ephys file
 	spike_data = pe.bin_spikes_all(f_ephys,bins,smooth=smooth,z=False) ##want to Z-score later
 	unit_names = spike_data.keys()
 	##now parse the timestamps.
-	if condition == 'all':
-		d = pt.sort_by_trial(f_behavior)
-		trial_data = np.vstack((d['upper_rewarded'],d['lower_rewarded']))
-	else:
-		trial_data = pt.sort_trials_by_condition(f_behavior)[condition] #will by only the ts for this condition
+	trial_data,regr,cond_idx = mr.ts_and_regressors2(f_behavior)
 	##now get the specific timestamps
-	ts = abs(trial_data[:,pt.epoch_LUT(epoch)])
+	ts = trial_data[:,pt.epoch_LUT(epoch)]
 	##allocate the return array. 
 	num_units = len(unit_names)
 	num_trials = ts.shape[0]
@@ -65,7 +64,24 @@ def get_data_matrix(f_behavior,f_ephys,epoch,condition,epoch_window=[1.5,0.5],
 		X[i,:] = zscore(X[i,:])
 	if plot:
 		ptt.plot_X_sample(X,e_bins)
-	return X
+	return X, regr, cond_idx
+
+"""
+A function that uses probabalistic PCA to decompose a
+data matrix, X.
+Inputs:
+	X: data matrix of shape n-units by t-samples
+Outputs:
+	X_pca: data matrix of n-components by n_units
+	var_explained: array containing the ratio of variance explained for each component 
+"""
+def ppca(X):
+	##init the PCA object
+	pca = PCA(svd_solver='full',n_components='mle') ##this sets it up to be PPCA
+	pca.fit(X.T)
+	X_pca = pca.components_
+	var_explained = pca.explained_variance_ratio_
+	return X_pca, var_explained
 
 """
 A function to compute the covariance matrix of a raw data matrix, X (see above)
@@ -125,3 +141,19 @@ Returns:
 def denoise_X(X,D):
 	return np.dot(D,X)
 
+
+"""
+a helper function to index a data matrix according
+to trial indices
+Inputs:
+	X; data matrix (units x trials)
+	trial_len: length, in bins, of trials
+	idx: array of trial numbers to take
+Outputs: X data array with only the trials of interest remaining
+"""
+def condition_sort(X,trial_len,index):
+	##the output array 
+	X_c = np.zeros((X.shape[0],trial_len*index.size))
+	for n, idx in enumerate(index):
+		X_c[:,n*trial_len:(n+1)*trial_len] = X[:,idx*trial_len:(idx+1)*trial_len]
+	return X_c
