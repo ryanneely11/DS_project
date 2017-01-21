@@ -1,6 +1,9 @@
 import h5py
 import numpy as np
-
+import os
+import glob
+import time
+from scipy.ndimage.filters import gaussian_filter
 
 """
 Takes in as an argument a log.txt files
@@ -177,6 +180,7 @@ Inputs:
 	-block_data: a dictionary containing all the timestamps
 	for one block, which is a period of time in which the lever-
 	reward contingency is constant.
+	-trial_max: maximum trial length to tolerate
 Returns:
 	an n-trial by i behavioral events-sized array
 
@@ -188,7 +192,7 @@ Returns:
 			-Timestamp 1 = action; negative number = lower lever; positive = upper lever
 			-Timestamp 2 = outcome; negative number = unrewarded; positive = rewarded
 """
-def sort_block(block_data):
+def sort_block(block_data,trial_max=5):
 	##let's define the order of events that we want:
 	ordered_events = ['start','action','outcome']
 	##allocate memory for the result array
@@ -261,6 +265,14 @@ def sort_block(block_data):
 		result[i,0] = trial_start
 		result[i,1] = action
 		result[i,2] = outcome
+	##now make sure none of the trials violate the max trial duration
+	t = 0
+	while t < result.shape[0]:
+		if (abs(result[t,2])-abs(result[t,1])) >= trial_max:
+			print "removing trial of length "+str(abs(result[t,2])-abs(result[t,1]))
+			result = np.delete(result,t,axis=0)
+		else:
+			t+=1
 	return result
 
 
@@ -519,7 +531,7 @@ def gauss_convolve(array, sigma):
 ##a function to extract the creation date (expressed as the 
 ##julian date) in integer format of a given filepath
 def get_cdate(path):
-	return int(time.strftime("%j", time.localtime(os.path.getctime(path))))
+	return int(time.strftime("%j", time.localtime(os.path.getmtime(path))))
 
 
 ##takes in a dictionary returned by parse_log and returns the 

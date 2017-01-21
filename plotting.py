@@ -9,7 +9,8 @@ from matplotlib.patches import ArrowStyle
 import matplotlib.gridspec as gridspec
 import PCA as pca
 from mpl_toolkits.mplot3d import Axes3D
-
+import os
+import h5py
 
 """
 A function to plot the significance of the regression
@@ -370,13 +371,16 @@ def plot_unit_regression(f_behavior,f_ephys,unit_name,
 
 ##this function takes an hdf5 file and plots the trials arranged by duration
 ##in a schamatic way. 
-def plot_trials(f_in):
+def plot_trials(f_in,pre=2):
 	#get the relevant data
 	results_dict = pt.sort_by_trial(f_in,save_data=False)
 	colorkey=('g','b','r')
 	##start with the upper lever rewarded sessions
 	try:
 		upper_trials = results_dict['upper_rewarded']
+		##replace the starting ts with the arg input delay
+		for i in range(upper_trials.shape[0]):
+			upper_trials[i,0] = abs(upper_trials[i,1])-pre
 		upper_trial_durs = pt.get_trial_durations(upper_trials)
 		#sort according to total trial len
 		upper_idx = np.argsort(abs(upper_trial_durs))[::-1]
@@ -402,6 +406,8 @@ def plot_trials(f_in):
 	##move on to the lower lever if applicable
 	try:
 		lower_trials = results_dict['lower_rewarded']
+		for i in range(lower_trials.shape[0]):
+			lower_trials[i,0] = abs(lower_trials[i,1])-pre
 		lower_trial_durs = pt.get_trial_durations(lower_trials)
 		#sort according to total trial len
 		lower_idx = np.argsort(abs(lower_trial_durs))[::-1]
@@ -903,6 +909,31 @@ def plot_X_sample(X,trial_len):
 	cb = fig.colorbar(cax,label="spikes")
 	fig.set_size_inches(10,6)
 	fig.suptitle("Showing first 10 trials",fontsize=20)
+
+"""
+Plots a sample of the raw data matrix, X, with full trials.
+Inputs:
+	-X; raw data matrix calculated by pca.get_datamatrix()
+	-ts: timestamps of each trial
+	-n_trials: the number of trials to plot
+"""
+def plot_X_sample2(X,ts,n_trials=10):
+	fig, ax = plt.subplots(1)
+	n_total = 0
+	trial_lens = []
+	for i in range(n_trials):
+		tlen = (ts[i,3]-ts[i,0])
+		n_total+=tlen
+		trial_lens.append(n_total)
+	cax=ax.imshow(X[:,0:n_total],origin='lower',interpolation='none',aspect='auto')
+	for i in range(n_trials):
+		trial_start = trial_lens[i]
+		ax.vlines(trial_start,0,X.shape[0],linestyle='dashed',color='white')
+	ax.set_ylabel("Neuron #",fontsize=18)
+	ax.set_xlabel("Bin #", fontsize=18)
+	cb = fig.colorbar(cax,label="spikes")
+	fig.set_size_inches(10,6)
+	fig.suptitle("Showing first "+str(n_trials)+" trials",fontsize=20)
 
 """
 A function to plot the covariance matrix

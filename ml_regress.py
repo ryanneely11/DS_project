@@ -14,6 +14,7 @@ import multiprocessing as mp
 import file_lists 
 import os
 from sklearn.model_selection import cross_val_predict
+import PCA as pca
 
 """
 A function to run regression analyses on a giant list of files
@@ -278,8 +279,8 @@ Inputs:
 """
 def data_matrix_regression(X,regressors):
 	##add a constant value to the regressor matrix
-	const = np.ones((regressors.shape[0],1))
-	regressors = np.hstack((regressors,const))
+	# const = np.ones((regressors.shape[0],1))
+	# regressors = np.hstack((regressors,const))
 	num_regressors = regressors.shape[1]
 	##how many trials do we have?
 	num_trials = regressors.shape[0]
@@ -305,6 +306,79 @@ def data_matrix_regression(X,regressors):
 			coeffs[:,u,b] = c
 			sig_vals[:,u,b] = p
 	return coeffs,sig_vals 
+
+"""
+This function is a method to run regression on a data matrix, X,
+of the type returned by the PCA function data_matrix_full_sessions.
+It will perform regression on each element of the array, which 
+corresponds to binned spike data. The result can then be used in 
+PCA/dimensionality reduction analyses. Imporantly, it differs from the
+above function because it works with trials of different lengths.
+Inputs:
+	X: data matrix in the form returned by PCA.data_matrix_full_sessions()
+	regressors: values of regressors matched in order to the trials
+		of X. Regressors should follow the model returned by get_regressors2.
+	ts: timestamp array data to help parse the beginnings and ends of each session.
+	Returns:
+		coeffs: a matrix of regression coefficients, dimensions 
+		sig_vals: a matrix of significant regression values in the 
+			same dims as coeffs
+"""
+def data_matrix_regression_full(X,regressors,ts):
+	##how many units in this file
+	num_units = X.shape[0]
+	num_regressors = regressors.shape[1]
+	##how many trials do we have?
+	num_trials = ts.shape[0]
+	##squish and pull all the trials into the same shape. 
+	##not ideal, but I don't really know what else to do
+	Xnew = pca.equalize_trials(X,ts) ##this array is split by unit
+	num_bins = Xnew.shape[2]
+	##setup a multiprocessing pool to run the regression
+	arglist = [(Xnew[x,:,:],regressors) for x in range(num_units)]
+	pool = mp.Pool(processes=mp.cpu_count())
+	async_result=pool.map_async(regress_unit_matrix,arglist)
+	pool.close()
+	pool.join()
+	data = async_result.get() ##a giant list of all the arrays from all processes
+	##now parse the data results
+	coeffs = np.zeros((num_units,num_regressors,num_bins))
+	rmse = np.zeros((num_units,num_bins))
+	pvals = np.zeros((num_units,num_regressors,num_bins))
+	for i in range(num_units):
+		coeffs[i,:,:] = data[i][0]
+		rmse[i,:] = data[i][1]
+		pvals[i,:,:] = data[i][2]
+	return coeffs,rmse,pvals 
+
+"""
+a helper function to run regression on a data matrix for a single unit.
+Optimized for use with multiprocessing.
+Inputs (args, a single list of arguments):
+	-args[0]: data array of regressands; ie the spike data for
+		the unit in question arranged trials x time
+	-args[1]: data array of regressors arranged trials x regressors
+Returns:
+	coeffs: coefficient values over the length of the time period (dims c x bins)
+	rmse: root mean squared error of the model fit over time (dim bins)
+"""
+def regress_unit_matrix(args):
+	##parse the arguments
+	Y = args[0]
+	X = args[1]
+	##setup the output arrays
+	coeffs = np.zeros((X.shape[1],Y.shape[1]))
+	rmse = np.zeros(Y.shape[1])
+	p_vals = np.zeros((X.shape[1],Y.shape[1]))
+	##calculate the regression for every time bin
+	for i in range(Y.shape[1]):
+		y = Y[:,i] ##data for this time bin across all trials
+		c,r = run_regression(y,X)
+		F,p = t_test_coeffs(y,X)
+		coeffs[:,i] = c
+		rmse[i] = r
+		p_vals[:,i] = p
+	return coeffs,rmse,p_vals
 
 
 
@@ -568,7 +642,7 @@ def ts_and_regressors(f_in):
 	##at the same time to preserve order for the next step
 	for n in block_names:
 		block_data = sorted_data[n]
-		regr_data = get_regressors2(block_data,n)
+		regr_data = get_regressors(block_data,n)
 		if ts != None:
 			ts = np.vstack((ts,block_data))
 		else:
@@ -702,6 +776,7 @@ Helper function to return RMSE of two dataset (of equal size)
 """
 def rmse(predictions, targets):
     return np.sqrt(((predictions - targets) ** 2).mean())
+
 
 ######DEPRECATED FUNCTIONS ###########
 
