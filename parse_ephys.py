@@ -358,3 +358,23 @@ def gauss_convolve(array, sigma):
 			print "Check your array input to gaussian filter"
 	return result
 
+
+"""
+A function to get all spike data for one session and compile it into a single
+data matrix.
+Inputs:
+	f_ephys: address of the hdf5 file to get session data from
+	z: if True, runs zscore on the full array.
+	bin_size: size of bins to use for spike counts (1 = binary array)
+	smooth: if >0, smooths data with a gaussian kernel of smooth width
+Returns:
+	spike_matrix: of size units x bins for the session
+"""
+def session_unit_matrix(f_ephys,Z=True,bin_size=20,smooth=12):
+	##get the unit data in dictionary form
+	unit_dict = bin_spikes_all(f_ephys,bin_size,smooth=smooth,z=Z)
+	##now just concatenate everything into an array
+	spike_matrix = np.zeros((len(unit_dict.keys()),unit_dict[unit_dict.keys()[0]].size))
+	for i,u in enumerate(unit_dict.keys()):
+		spike_matrix[i,:] = unit_dict[u]
+	return spike_matrix
